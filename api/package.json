@@ -4,8 +4,7 @@
   "type": "module",
   "dependencies": {
     "pdfkit": "^0.14.0",
-    "canvas": "^2.11.2",
-    "jsbarcode": "^3.11.5"
+    "bwip-js": "^4.2.0"
   }
 }
 

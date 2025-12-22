@@ -1,6 +1,5 @@
 import PDFDocument from 'pdfkit';
-import { createCanvas } from 'canvas';
-import JsBarcode from 'jsbarcode';
+import bwipjs from 'bwip-js';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -58,13 +57,61 @@ function registerInterFont(doc) {
 }
 
 export async function generatePDF(data) {
-  return new Promise((resolve, reject) => {
+  try {
+    // Generate barcode first (before creating PDF document)
+    const skuString = String(data.sku);
+    let barcodeBuffer;
+    
     try {
-      // Tag size: approximately 80mm x 116mm (226.77 x 330 points)
-      const doc = new PDFDocument({
-        size: [226.77, 330],
-        margins: { top: 15, bottom: 15, left: 15, right: 15 }
+      // Try to generate barcode - handle both sync and async versions
+      const bufferResult = bwipjs.toBuffer({
+        bcid: 'code128',
+        text: skuString,
+        scale: 2,
+        height: 40,
+        includetext: false,
+        textxalign: 'center',
       });
+      
+      // Handle both Promise and direct Buffer return
+      barcodeBuffer = bufferResult instanceof Promise ? await bufferResult : bufferResult;
+    } catch (barcodeError) {
+      console.error('Barcode generation error:', barcodeError);
+      // Fallback with different settings
+      try {
+        const fallbackResult = bwipjs.toBuffer({
+          bcid: 'code128',
+          text: skuString,
+          scale: 1.5,
+          height: 38,
+          includetext: false,
+        });
+        barcodeBuffer = fallbackResult instanceof Promise ? await fallbackResult : fallbackResult;
+      } catch (fallbackError) {
+        console.error('Barcode generation fallback error:', fallbackError);
+        // Last resort - minimal settings
+        const lastResortResult = bwipjs.toBuffer({
+          bcid: 'code128',
+          text: skuString,
+          scale: 1,
+          height: 35,
+          includetext: false,
+        });
+        barcodeBuffer = lastResortResult instanceof Promise ? await lastResortResult : lastResortResult;
+      }
+    }
+    
+    if (!barcodeBuffer || !Buffer.isBuffer(barcodeBuffer)) {
+      throw new Error('Failed to generate barcode buffer');
+    }
+    
+    return new Promise((resolve, reject) => {
+      try {
+        // Tag size: approximately 80mm x 116mm (226.77 x 330 points)
+        const doc = new PDFDocument({
+          size: [226.77, 330],
+          margins: { top: 15, bottom: 15, left: 15, right: 15 }
+        });
 
       const chunks = [];
       doc.on('data', chunk => chunks.push(chunk));
@@ -205,53 +252,7 @@ export async function generatePDF(data) {
       
       yPos += 12;
 
-      // Generate barcode - Using CODE128 for better appearance with full height bars
-      const canvas = createCanvas(400, 75);
-      const skuString = String(data.sku);
-      
-      // Use CODE128 for cleaner appearance with full-height vertical lines
-      // CODE128 is more flexible and produces better-looking barcodes
-      try {
-        JsBarcode(canvas, skuString, {
-          format: 'CODE128',
-          width: 2,
-          height: 40,
-          displayValue: false, // We'll add the number separately
-          margin: 0,
-          background: 'transparent',
-          lineColor: '#000000',
-          marginTop: 0,
-          marginBottom: 0,
-          marginLeft: 0,
-          marginRight: 0
-        });
-      } catch (barcodeError) {
-        // Fallback with slightly different settings if first attempt fails
-        try {
-          JsBarcode(canvas, skuString, {
-            format: 'CODE128',
-            width: 1.8,
-            height: 40,
-            displayValue: false,
-            margin: 0,
-            background: 'transparent',
-            lineColor: '#000000'
-          });
-        } catch (fallbackError) {
-          console.error('Barcode generation error:', fallbackError);
-          // Last resort - try with minimal settings
-          JsBarcode(canvas, skuString, {
-            format: 'CODE128',
-            width: 1.5,
-            height: 38,
-            displayValue: false
-          });
-        }
-      }
-
-      // Convert canvas to image buffer
-      const barcodeBuffer = canvas.toBuffer('image/png');
-      
+      // Use the pre-generated barcode buffer
       // Center the barcode with smaller sizing
       const barcodeWidth = 160;
       const barcodeHeight = 40;
@@ -285,9 +286,12 @@ export async function generatePDF(data) {
            width: doc.page.width - 30
          });
 
-      doc.end();
-    } catch (error) {
-      reject(error);
-    }
-  });
+        doc.end();
+      } catch (error) {
+        reject(error);
+      }
+    });
+  } catch (error) {
+    return Promise.reject(error);
+  }
 }

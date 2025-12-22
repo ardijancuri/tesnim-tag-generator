@@ -27,7 +27,8 @@ function App() {
     setLoading(true)
 
     try {
-      const response = await axios.post('http://localhost:5000/api/generate-pdf', formData, {
+      const apiUrl = import.meta.env.VITE_API_URL || '/api/generate-pdf';
+      const response = await axios.post(apiUrl, formData, {
         responseType: 'blob'
       })
 

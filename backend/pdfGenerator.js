@@ -10,8 +10,40 @@ const __dirname = path.dirname(__filename);
 
 // Register Inter font if available, otherwise use Helvetica
 function registerInterFont(doc) {
-  const fontPath = path.join(__dirname, 'fonts', 'Inter-Regular.ttf');
-  const fontBoldPath = path.join(__dirname, 'fonts', 'Inter-Bold.ttf');
+  // Try multiple possible font paths (for both local dev and serverless)
+  const possibleFontPaths = [
+    path.join(__dirname, 'fonts', 'Inter-Regular.ttf'), // Local backend/fonts
+    path.join(process.cwd(), 'backend', 'fonts', 'Inter-Regular.ttf'), // Serverless from root
+    path.join(process.cwd(), 'fonts', 'Inter-Regular.ttf') // Alternative serverless path
+  ];
+  
+  const possibleBoldPaths = [
+    path.join(__dirname, 'fonts', 'Inter-Bold.ttf'),
+    path.join(process.cwd(), 'backend', 'fonts', 'Inter-Bold.ttf'),
+    path.join(process.cwd(), 'fonts', 'Inter-Bold.ttf')
+  ];
+  
+  let fontPath = null;
+  let fontBoldPath = null;
+  
+  // Find the first existing font path
+  for (const possiblePath of possibleFontPaths) {
+    if (fs.existsSync(possiblePath)) {
+      fontPath = possiblePath;
+      break;
+    }
+  }
+  
+  for (const possiblePath of possibleBoldPaths) {
+    if (fs.existsSync(possiblePath)) {
+      fontBoldPath = possiblePath;
+      break;
+    }
+  }
+  
+  if (!fontPath || !fontBoldPath) {
+    return false;
+  }
   
   try {
     if (fs.existsSync(fontPath) && fs.existsSync(fontBoldPath)) {

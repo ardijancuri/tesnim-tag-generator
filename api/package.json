@@ -1,0 +1,11 @@
+{
+  "name": "tesnim-tag-generator-api",
+  "version": "1.0.0",
+  "type": "module",
+  "dependencies": {
+    "pdfkit": "^0.14.0",
+    "canvas": "^2.11.2",
+    "jsbarcode": "^3.11.5"
+  }
+}
+

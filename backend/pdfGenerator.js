@@ -1,5 +1,4 @@
-import { PDFDocument, rgb } from 'pdf-lib';
-import * as fontkit from 'fontkit';
+import PDFDocument from 'pdfkit';
 import bwipjs from 'bwip-js';
 import fs from 'fs';
 import path from 'path';
@@ -8,93 +7,64 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Find template PDF path
-function findTemplatePath() {
-  const possiblePaths = [
-    path.join(__dirname, 'template.pdf'),
-    path.join(process.cwd(), 'template.pdf'),
-    path.join(process.cwd(), 'backend', 'template.pdf')
+// Register Inter font if available, otherwise use Helvetica
+function registerInterFont(doc) {
+  // Try multiple possible font paths (for both local dev and serverless)
+  const possibleFontPaths = [
+    path.join(__dirname, 'fonts', 'Inter-Regular.ttf'), // Local backend/fonts
+    path.join(process.cwd(), 'backend', 'fonts', 'Inter-Regular.ttf'), // Serverless from root
+    path.join(process.cwd(), 'fonts', 'Inter-Regular.ttf') // Alternative serverless path
   ];
   
-  for (const templatePath of possiblePaths) {
-    if (fs.existsSync(templatePath)) {
-      return templatePath;
-    }
-  }
-  return null;
-}
-
-// Find font paths
-function findFontPaths() {
-  const possibleTextPaths = [
-    path.join(__dirname, 'fonts', 'Fontspring-DEMO-allroundgothic-text.otf'),
-    path.join(process.cwd(), 'backend', 'fonts', 'Fontspring-DEMO-allroundgothic-text.otf'),
-    path.join(process.cwd(), 'fonts', 'Fontspring-DEMO-allroundgothic-text.otf')
+  const possibleBoldPaths = [
+    path.join(__dirname, 'fonts', 'Inter-Bold.ttf'),
+    path.join(process.cwd(), 'backend', 'fonts', 'Inter-Bold.ttf'),
+    path.join(process.cwd(), 'fonts', 'Inter-Bold.ttf')
   ];
   
-  const possibleDemiPaths = [
-    path.join(__dirname, 'fonts', 'Fontspring-DEMO-allroundgothic-demi.otf'),
-    path.join(process.cwd(), 'backend', 'fonts', 'Fontspring-DEMO-allroundgothic-demi.otf'),
-    path.join(process.cwd(), 'fonts', 'Fontspring-DEMO-allroundgothic-demi.otf')
-  ];
+  let fontPath = null;
+  let fontBoldPath = null;
   
-  let textFontPath = null;
-  let demiFontPath = null;
-  
-  for (const possiblePath of possibleTextPaths) {
+  // Find the first existing font path
+  for (const possiblePath of possibleFontPaths) {
     if (fs.existsSync(possiblePath)) {
-      textFontPath = possiblePath;
+      fontPath = possiblePath;
       break;
     }
   }
   
-  for (const possiblePath of possibleDemiPaths) {
+  for (const possiblePath of possibleBoldPaths) {
     if (fs.existsSync(possiblePath)) {
-      demiFontPath = possiblePath;
+      fontBoldPath = possiblePath;
       break;
     }
   }
   
-  return { textFontPath, demiFontPath };
+  if (!fontPath || !fontBoldPath) {
+    return false;
+  }
+  
+  try {
+    if (fs.existsSync(fontPath) && fs.existsSync(fontBoldPath)) {
+      doc.registerFont('Inter', fontPath);
+      doc.registerFont('Inter-Bold', fontBoldPath);
+      return true;
+    }
+  } catch (error) {
+    console.warn('Inter font not found, using Helvetica fallback');
+  }
+  return false;
 }
 
 export async function generatePDF(data) {
   try {
-    // Find template PDF
-    const templatePath = findTemplatePath();
-    if (!templatePath) {
-      throw new Error('Template PDF not found');
-    }
-    
-    // Load template PDF
-    const templateBytes = fs.readFileSync(templatePath);
-    const pdfDoc = await PDFDocument.load(templateBytes);
-    
-    // Register fontkit for custom font embedding
-    pdfDoc.registerFontkit(fontkit);
-    
-    // Get the first page (template should have one page)
-    const pages = pdfDoc.getPages();
-    const page = pages[0];
-    const { width, height } = page.getSize();
-    
-    // Find and embed fonts
-    const { textFontPath, demiFontPath } = findFontPaths();
-    let textFont, demiFont;
-    
-    if (textFontPath && demiFontPath) {
-      const textFontBytes = fs.readFileSync(textFontPath);
-      const demiFontBytes = fs.readFileSync(demiFontPath);
-      textFont = await pdfDoc.embedFont(textFontBytes);
-      demiFont = await pdfDoc.embedFont(demiFontBytes);
-    }
-    
-    // Generate barcode
+    // Generate barcode first (before creating PDF document)
     const skuString = String(data.sku);
     let barcodeBuffer;
     
     try {
-      const bufferResult = bwipjs.toBuffer({
+      // Try to generate barcode - bwip-js.toBuffer returns a Promise
+      barcodeBuffer = await bwipjs.toBuffer({
         bcid: 'code128',
         text: skuString,
         scale: 2,
@@ -102,164 +72,232 @@ export async function generatePDF(data) {
         includetext: false,
         textxalign: 'center',
       });
-      barcodeBuffer = bufferResult instanceof Promise ? await bufferResult : bufferResult;
     } catch (barcodeError) {
       console.error('Barcode generation error:', barcodeError);
+      // Fallback with different settings
       try {
-        const fallbackResult = bwipjs.toBuffer({
+        barcodeBuffer = await bwipjs.toBuffer({
           bcid: 'code128',
           text: skuString,
           scale: 1.5,
           height: 38,
           includetext: false,
         });
-        barcodeBuffer = fallbackResult instanceof Promise ? await fallbackResult : fallbackResult;
       } catch (fallbackError) {
         console.error('Barcode generation fallback error:', fallbackError);
-        const lastResortResult = bwipjs.toBuffer({
-          bcid: 'code128',
-          text: skuString,
-          scale: 1,
-          height: 35,
-          includetext: false,
-        });
-        barcodeBuffer = lastResortResult instanceof Promise ? await lastResortResult : lastResortResult;
+        // Last resort - minimal settings
+        try {
+          barcodeBuffer = await bwipjs.toBuffer({
+            bcid: 'code128',
+            text: skuString,
+            scale: 1,
+            height: 35,
+            includetext: false,
+          });
+        } catch (lastResortError) {
+          console.error('Last resort barcode generation failed:', lastResortError);
+          throw new Error(`Barcode generation failed: ${lastResortError.message}`);
+        }
       }
     }
     
     if (!barcodeBuffer || !Buffer.isBuffer(barcodeBuffer)) {
-      throw new Error('Failed to generate barcode buffer');
-    }
-    
-    // Embed barcode image
-    const barcodeImage = await pdfDoc.embedPng(barcodeBuffer);
-    
-    // Use fonts or fallback to Helvetica
-    const regularFont = textFont || (await pdfDoc.embedFont('Helvetica'));
-    const boldFont = demiFont || (await pdfDoc.embedFont('Helvetica-Bold'));
-    
-    // Overlay content on template
-    // Position content based on template layout
-    // PDF coordinates start from bottom-left, so we work from top down
-    // Start much lower on the page
-    let yPos = height - 150; // Start much lower from top
-    
-    // Left margin for left-aligned content (moved a bit to the left)
-    const leftMargin = 20;
-    
-    // Product Name at the top (left-aligned)
-    if (data.productName) {
-      page.drawText(data.productName, {
-        x: leftMargin,
-        y: yPos,
-        size: 18,
-        font: regularFont, // Changed from boldFont to regularFont
-        color: rgb(0, 0, 0),
+      console.error('Barcode buffer validation failed:', {
+        exists: !!barcodeBuffer,
+        type: typeof barcodeBuffer,
+        isBuffer: Buffer.isBuffer(barcodeBuffer),
+        value: barcodeBuffer
       });
-      yPos -= 45; // Increased spacing before price (from 30 to 45)
+      throw new Error(`Failed to generate barcode buffer. Got: ${typeof barcodeBuffer}`);
     }
     
-    // Price (right after product name, left-aligned)
-    if (data.price) {
-      let priceValue = parseFloat(data.price);
-      if (isNaN(priceValue)) {
-        priceValue = parseFloat(data.price.replace(/[^\d.]/g, '')) || 0;
-      }
-      const formattedPrice = priceValue.toFixed(2);
+    return new Promise((resolve, reject) => {
+      try {
+        // Tag size: approximately 80mm x 116mm (226.77 x 330 points)
+        const doc = new PDFDocument({
+          size: [226.77, 330],
+          margins: { top: 15, bottom: 15, left: 15, right: 15 }
+        });
+
+      const chunks = [];
+      doc.on('data', chunk => chunks.push(chunk));
+      doc.on('end', () => resolve(Buffer.concat(chunks)));
+      doc.on('error', reject);
+
+      // Register Inter font
+      const hasInterFont = registerInterFont(doc);
+      const regularFont = hasInterFont ? 'Inter' : 'Helvetica';
+      const boldFont = hasInterFont ? 'Inter-Bold' : 'Helvetica-Bold';
+
+      // Background color (light beige/white like in the image)
+      doc.rect(0, 0, doc.page.width, doc.page.height)
+         .fillColor('#FAFAFA')
+         .fill();
+
+      let yPos = 20;
+
+      // Header - TESNIM HOME (bold, centered)
+      doc.fillColor('#000000')
+         .fontSize(22)
+         .font(boldFont)
+         .text('TESNIM HOME', 15, yPos, {
+           align: 'center',
+           width: doc.page.width - 30
+         });
+
+      yPos += 30;
+
+      // Line break (separator line under title)
+      doc.moveTo(15, yPos)
+         .lineTo(doc.page.width - 15, yPos)
+         .strokeColor('#000000')
+         .lineWidth(0.5)
+         .stroke();
       
-      let priceText;
-      if (data.currency === 'euro') {
-        priceText = `€${formattedPrice}`;
-      } else {
-        priceText = `${formattedPrice} den`;
+      yPos += 15;
+
+      // Product Name (bold, centered)
+      doc.fontSize(14)
+         .font(boldFont)
+         .fillColor('#000000')
+         .text(data.productName || '', 15, yPos, {
+           align: 'center',
+           width: doc.page.width - 30
+         });
+
+      yPos += 28;
+
+      // ID fields (smaller font, regular weight, centered)
+      if (data.id1) {
+        doc.fontSize(11)
+           .font(regularFont)
+           .fillColor('#333333')
+           .text(data.id1, 15, yPos, {
+             align: 'center',
+             width: doc.page.width - 30
+           });
+        yPos += 14;
       }
+
+      if (data.id2) {
+        doc.fontSize(11)
+           .font(regularFont)
+           .fillColor('#333333')
+           .text(data.id2, 15, yPos, {
+             align: 'center',
+             width: doc.page.width - 30
+           });
+        yPos += 14;
+      }
+
+      if (data.id3) {
+        doc.fontSize(11)
+           .font(regularFont)
+           .fillColor('#333333')
+           .text(data.id3, 15, yPos, {
+             align: 'center',
+             width: doc.page.width - 30
+           });
+        yPos += 14;
+      }
+
+      // Add space before size field
+      if (data.size) {
+        yPos += 8;
+      }
+
+      // Size (centered)
+      if (data.size) {
+        doc.fontSize(11)
+           .font(regularFont)
+           .fillColor('#333333')
+           .text(data.size, 15, yPos, {
+             align: 'center',
+             width: doc.page.width - 30
+           });
+        yPos += 17;
+      }
+
+      // Add extra margin top before price
+      yPos += 10;
+
+      // Price (large, bold, centered)
+      if (data.price) {
+        // Format price to 2 decimal places
+        let priceValue = parseFloat(data.price);
+        if (isNaN(priceValue)) {
+          priceValue = parseFloat(data.price.replace(/[^\d.]/g, '')) || 0;
+        }
+        const formattedPrice = priceValue.toFixed(2);
+        
+        let priceText;
+        // Format price based on currency
+        if (data.currency === 'euro') {
+          priceText = `€${formattedPrice}`;
+        } else {
+          // Default to denar
+          priceText = `${formattedPrice} den`;
+        }
+        
+        doc.fontSize(28)
+           .font(boldFont)
+           .fillColor('#000000')
+           .text(priceText, 15, yPos, {
+             align: 'center',
+             width: doc.page.width - 30
+           });
+        yPos += 36;
+      }
+
+      // Separator line
+      doc.moveTo(15, yPos)
+         .lineTo(doc.page.width - 15, yPos)
+         .strokeColor('#000000')
+         .lineWidth(0.5)
+         .stroke();
       
-      page.drawText(priceText, {
-        x: leftMargin,
-        y: yPos,
-        size: 36, // Increased from 28
-        font: boldFont,
-        color: rgb(0, 0, 0),
+      yPos += 12;
+
+      // Use the pre-generated barcode buffer
+      // Center the barcode with smaller sizing
+      const barcodeWidth = 160;
+      const barcodeHeight = 40;
+      const barcodeX = (doc.page.width - barcodeWidth) / 2;
+      
+      // Add barcode image to PDF
+      doc.image(barcodeBuffer, barcodeX, yPos, {
+        width: barcodeWidth,
+        height: barcodeHeight,
+        align: 'center'
       });
-      yPos -= 40;
-    }
-    
-    // Size (before ID fields, no top spacing)
-    if (data.size) {
-      page.drawText(data.size, {
-        x: leftMargin,
-        y: yPos,
-        size: 12, // Increased from 11
-        font: regularFont,
-        color: rgb(0.2, 0.2, 0.2),
-      });
-      yPos -= 17;
-    }
-    
-    // ID fields (after size, left-aligned)
-    if (data.id1) {
-      page.drawText(data.id1, {
-        x: leftMargin,
-        y: yPos,
-        size: 12, // Increased from 11
-        font: regularFont,
-        color: rgb(0.2, 0.2, 0.2),
-      });
-      yPos -= 14;
-    }
-    
-    if (data.id2) {
-      page.drawText(data.id2, {
-        x: leftMargin,
-        y: yPos,
-        size: 12, // Increased from 11
-        font: regularFont,
-        color: rgb(0.2, 0.2, 0.2),
-      });
-      yPos -= 14;
-    }
-    
-    if (data.id3) {
-      page.drawText(data.id3, {
-        x: leftMargin,
-        y: yPos,
-        size: 12, // Increased from 11
-        font: regularFont,
-        color: rgb(0.2, 0.2, 0.2),
-      });
-      yPos -= 14;
-    }
-    
-    // Barcode (smaller size, positioned even lower and more to the right)
-    yPos -= 55; // Move barcode even lower (increased from 30)
-    const barcodeWidth = 120; // Reduced from 160
-    const barcodeHeight = 30; // Reduced from 40
-    const barcodeX = width - barcodeWidth - 20; // Position more to the right (20px from right edge)
-    
-    page.drawImage(barcodeImage, {
-      x: barcodeX,
-      y: yPos - barcodeHeight,
-      width: barcodeWidth,
-      height: barcodeHeight,
+
+      // Add space between barcode and number
+      yPos += 50;
+
+      // SKU number below barcode (centered)
+      doc.fontSize(9)
+         .font(regularFont)
+         .fillColor('#000000')
+         .text(skuString, 15, yPos, {
+           align: 'center',
+           width: doc.page.width - 30
+         });
+
+      // Footer (bottom of page, centered)
+      doc.fontSize(7)
+         .font(regularFont)
+         .fillColor('#666666')
+         .text('TESNIM • www.tesnim.mk', 15, doc.page.height - 25, {
+           align: 'center',
+           width: doc.page.width - 30
+         });
+
+        doc.end();
+      } catch (error) {
+        reject(error);
+      }
     });
-    
-    // SKU number below barcode (right-aligned to match barcode)
-    yPos -= 45; // Increased spacing above SKU (from 40 to 45)
-    const skuTextWidth = regularFont.widthOfTextAtSize(skuString, 11); // Increased from 9 to 11
-    page.drawText(skuString, {
-      x: barcodeX + (barcodeWidth - skuTextWidth) / 2, // Center under barcode
-      y: yPos,
-      size: 11, // Increased from 9 to 11
-      font: regularFont,
-      color: rgb(0, 0, 0),
-    });
-    
-    // Save PDF
-    const pdfBytes = await pdfDoc.save();
-    return Buffer.from(pdfBytes);
-    
   } catch (error) {
-    console.error('Error generating PDF:', error);
-    throw error;
+    return Promise.reject(error);
   }
 }
